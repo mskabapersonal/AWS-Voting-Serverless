@@ -1,0 +1,163 @@
+# full example: https://github.com/shankysharma86/aws/blob/master/ApiGateway-Lambda-DynamoDB/CloudFormation-StackApiLambdaDB.yml
+
+Description: Voting Service
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: Example - Voting Service
+
+Globals:
+  Function:
+    Runtime: nodejs14.x
+    Tracing: Active
+
+Resources:
+  VoteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./build/handlers/http/vote/
+      Handler: vote.post
+      Role: !GetAtt LambdaExecutionRole.Arn
+      AutoPublishAlias: votingservice
+      ProvisionedConcurrencyConfig: 
+        ProvisionedConcurrentExecutions: 1
+      Events:
+        PostVoteEvent:
+          Type: Api
+          Properties:
+            Path: /vote
+            Method: post
+
+  ComputeVoteFromStreamFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./build/handlers/dynamodb/computevote/
+      Handler: computevote.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  ResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./build/handlers/http/results/
+      Handler: results.get
+      Role: !GetAtt LambdaExecutionRole.Arn
+      ReservedConcurrentExecutions: 5
+      Events:
+        PostResultsEvent:
+          Type: Api
+          Properties:
+            Path: /results
+            Method: get
+
+  DynamoDBVoteTable: #https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-dynamodb-table.html
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: vote-table
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 10
+        WriteCapacityUnits: 10
+      AttributeDefinitions:
+          - AttributeName: PollEmail
+            AttributeType: S
+      KeySchema:
+          - AttributeName: PollEmail
+            KeyType: HASH
+      StreamSpecification: 
+        StreamViewType: NEW_IMAGE
+
+  ComputeVoteEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !GetAtt DynamoDBVoteTable.StreamArn
+      FunctionName: !GetAtt ComputeVoteFromStreamFunction.Arn
+      StartingPosition: TRIM_HORIZON
+
+  DynamoDBTotalTable: #https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-dynamodb-table.html
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: voting-total-table
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 10
+        WriteCapacityUnits: 10
+      AttributeDefinitions:
+          - AttributeName: votePollCandidate
+            AttributeType: S
+      KeySchema:
+          - AttributeName: votePollCandidate
+            KeyType: HASH
+
+  DynamoDBConfigTable: #https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-dynamodb-table.html
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: voting-config-table
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 10
+        WriteCapacityUnits: 10
+      AttributeDefinitions:
+          - AttributeName: poll
+            AttributeType: S
+      KeySchema:
+          - AttributeName: poll
+            KeyType: HASH
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: voting-lambda-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      Path: /
+
+  # Boilerplate for IAM role to enable logging
+  CloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  Account:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt CloudWatchRole.Arn
+
+Outputs: # You should specify the Stack's external interfaces as Outputs
+  VoteFunction:
+    Description: Arn of VoteFunction
+    Value: !Ref VoteFunction
+
+  ComputeVoteFromStreamFunction:
+    Description:  Arn of ComputeVoteFromStreamFunction
+    Value: !Ref ComputeVoteFromStreamFunction
+
+  ResultsFunction:
+    Description:  Arn of ResultsFunction
+    Value: !Ref ResultsFunction
